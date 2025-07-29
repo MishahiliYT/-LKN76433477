@@ -1,19 +1,20 @@
+
 import os
 import logging
 import random
 import string
 import sqlite3
+import asyncio
+from dotenv import load_dotenv
+
 from aiogram import Bot, Dispatcher, types
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram.filters.state import State, StatesGroup
+from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram import F
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram import Bot, Dispatcher
-from aiogram import Router
-from dotenv import load_dotenv
-import asyncio
+from aiogram import F
 
 # --- Загрузка переменных окружения ---
 load_dotenv()
@@ -160,7 +161,7 @@ async def send_farewell(user_id: int):
 
 # --- Хэндлеры ---
 
-@dp.message(commands=["start"])
+@dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     await message.answer(
         "🔐 Добро пожаловать в официальную поддержку LKN VPN!\n\n"
@@ -176,7 +177,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
         reply_markup=main_menu()
     )
 
-@dp.message(commands=["help"])
+@dp.message(Command("help"))
 async def cmd_help(message: types.Message):
     await message.answer(
         "Доступные команды:\n"
@@ -186,7 +187,7 @@ async def cmd_help(message: types.Message):
         "Используйте кнопки меню или опишите проблему."
     )
 
-@dp.message(commands=["changepic"])
+@dp.message(Command("changepic"))
 async def cmd_changepic(message: types.Message):
     if not message.reply_to_message or not message.reply_to_message.photo:
         await message.reply("Отправьте эту команду в ответ на фото, которое хотите установить в профиль бота.")
@@ -398,3 +399,5 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+    
