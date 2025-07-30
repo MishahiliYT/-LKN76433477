@@ -15,13 +15,13 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from dotenv import load_dotenv
 import asyncio
 
-# --- Загрузка токена ---
+# --- Загрузка токена из .env ---
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
-    raise RuntimeError("Нет токена бота в .env")
+    raise RuntimeError("В .env отсутствует BOT_TOKEN")
 
-# --- Логирование ---
+# --- Настройка логирования ---
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
@@ -30,23 +30,36 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- Инициализация бота и диспетчера ---
+# --- Инициализация бота и диспетчера с памятью состояний ---
 storage = MemoryStorage()
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=storage)
 
-# --- Часовой пояс ---
+# --- Временная зона ---
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 
-# --- Менеджеры и кодовые слова ---
+# --- Менеджеры (ID) ---
 MANAGERS = {5546292835, 1789838272}
+
+# --- Кодовые слова ---
 CODEWORD_STEP1 = "Симфония"
 CODEWORD_STEP2 = "Людвиг Ван Бетховен"
 
-# --- База данных ---
-conn = sqlite3.connect("lknvpn_bot.db")
+# --- Поддерживаемые языки ---
+LANGUAGES = {
+    "ru": "Русский",
+    "ua": "Українська",
+    "kz": "Қазақша",
+    "by": "Беларуская",
+    "en": "English",
+    "pl": "Polski"
+}
+
+# --- Подключение к SQLite ---
+conn = sqlite3.connect("lknvpn_bot.db", check_same_thread=False)
 cursor = conn.cursor()
 
+# --- Создание таблиц ---
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS tickets (
     code TEXT PRIMARY KEY,
@@ -60,7 +73,7 @@ CREATE TABLE IF NOT EXISTS tickets (
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS problem_feedback (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    description TEXT,
+    description TEXT UNIQUE,
     count INTEGER DEFAULT 1
 )
 """)
@@ -83,12 +96,21 @@ CREATE TABLE IF NOT EXISTS ratings (
 )
 """)
 
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS users (
+    user_id INTEGER PRIMARY KEY,
+    language TEXT DEFAULT 'ru',
+    last_interaction TEXT
+)
+""")
+
 conn.commit()
 
 # --- Состояния ---
 class Form(StatesGroup):
     codeword_wait1 = State()
     codeword_wait2 = State()
+    language_select = State()
     waiting_for_device = State()
     waiting_for_server = State()
     waiting_for_country = State()
@@ -98,7 +120,53 @@ class Form(StatesGroup):
     waiting_for_rating = State()
     waiting_for_manager_problem = State()
 
+# --- Вспомогательные функции ---
+
+def now_moscow():
+    return datetime.now(MOSCOW_TZ).strftime("%Y-%m-%d %H:%M:%S")
+
+def generate_ticket_code(length=6):
+    chars = string.ascii_uppercase + string.digits
+    while True:
+        code = ''.join(random.choice(chars) for _ in range(length))
+        cursor.execute("SELECT code FROM tickets WHERE code = ?", (code,))
+        if not cursor.fetchone():
+            return code
+
+async def notify_managers(text: str):
+    for manager_id in MANAGERS:
+        try:
+            await bot.send_message(manager_id, text)
+        except Exception as e:
+            logger.error(f"Ошибка при отправке менеджеру {manager_id}: {e}")
+
+async def send_farewell(user_id: int):
+    phrases = [
+        "Спасибо за обращение! Всегда рады помочь.",
+        "Будьте на связи и безопасного интернета!",
+        "Если что — обращайтесь, LKN VPN 24/7.",
+        "Желаем вам отличного дня и стабильного VPN.",
+    ]
+    phrase = random.choice(phrases)
+    try:
+        await bot.send_message(user_id, phrase, reply_markup=main_menu())
+    except Exception as e:
+        logger.error(f"Ошибка при отправке прощального сообщения пользователю {user_id}: {e}")
+
+def user_language(user_id: int):
+    cursor.execute("SELECT language FROM users WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    return row[0] if row else "ru"
+
+def save_user_language(user_id: int, lang: str):
+    cursor.execute(
+        "INSERT INTO users (user_id, language, last_interaction) VALUES (?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET language=?, last_interaction=?",
+        (user_id, lang, now_moscow(), lang, now_moscow())
+    )
+    conn.commit()
+
 # --- Клавиатуры ---
+
 def main_menu():
     kb = InlineKeyboardBuilder()
     kb.row(
@@ -156,7 +224,7 @@ def resolve_menu():
 
 def rating_keyboard():
     kb = InlineKeyboardBuilder()
-    for i in range(1,6):
+    for i in range(1, 6):
         kb.button(text=str(i), callback_data=f"rating_{i}")
     kb.adjust(5)
     return kb.as_markup()
@@ -169,43 +237,20 @@ def admin_menu():
     )
     return kb.as_markup()
 
-# --- Утилиты ---
-def generate_ticket_code(length=6):
-    chars = string.ascii_uppercase + string.digits
-    while True:
-        code = ''.join(random.choice(chars) for _ in range(length))
-        cursor.execute("SELECT code FROM tickets WHERE code = ?", (code,))
-        if not cursor.fetchone():
-            return code
+def language_menu():
+    kb = InlineKeyboardBuilder()
+    for code, name in LANGUAGES.items():
+        kb.button(text=name, callback_data=f"lang_{code}")
+    kb.adjust(2)
+    return kb.as_markup()
 
-def now_moscow():
-    return datetime.now(MOSCOW_TZ).strftime("%Y-%m-%d %H:%M:%S")
+# --- Обработчики команд и состояний ---
 
-async def send_farewell(user_id: int):
-    phrases = [
-        "Спасибо за обращение! Всегда рады помочь.",
-        "Будьте на связи и безопасного интернета!",
-        "Если что — обращайтесь, LKN VPN 24/7.",
-        "Желаем вам отличного дня и стабильного VPN.",
-    ]
-    phrase = random.choice(phrases)
-    await bot.send_message(user_id, phrase, reply_markup=main_menu())
-
-async def notify_managers(text: str):
-    for manager_id in MANAGERS:
-        try:
-            await bot.send_message(manager_id, text)
-        except Exception as e:
-            logger.error(f"Ошибка при отправке менеджеру {manager_id}: {e}")
-
-# --- Обработчики команд ---
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message, state: FSMContext):
-    ...
     await message.answer(
         "🔐 Добро пожаловать в поддержку LKN VPN!\n\n"
-        "Вы можете быстро получить помощь по подключению, работе VPN и другим вопросам.\n"
-        "Для начала введите кодовое слово.",
+        "Для начала введите первое кодовое слово.",
     )
     await state.set_state(Form.codeword_wait1)
 
@@ -220,12 +265,20 @@ async def process_codeword1(message: types.Message, state: FSMContext):
 @dp.message(Form.codeword_wait2)
 async def process_codeword2(message: types.Message, state: FSMContext):
     if message.text.strip().lower() == CODEWORD_STEP2.lower():
-        await message.answer("Кодовые слова подтверждены. Вот главное меню:", reply_markup=main_menu())
-        await state.clear()
+        await message.answer("Кодовые слова подтверждены. Выберите язык / Choose language:", reply_markup=language_menu())
+        await state.set_state(Form.language_select)
     else:
         await message.answer("Неверное кодовое слово. Попробуйте снова.")
 
-@dp.message(CommandHelp())
+@dp.callback_query(Form.language_select, F.data.startswith("lang_"))
+async def process_language(callback: types.CallbackQuery, state: FSMContext):
+    lang_code = callback.data.split("_")[1]
+    save_user_language(callback.from_user.id, lang_code)
+    await callback.answer()
+    await callback.message.answer("Язык установлен. Вот главное меню:", reply_markup=main_menu())
+    await state.clear()
+
+@dp.message(Command("help"))
 async def cmd_help(message: types.Message):
     await message.answer(
         "Команды:\n"
@@ -233,6 +286,8 @@ async def cmd_help(message: types.Message):
         "/help — Помощь\n"
         "Используйте кнопки меню для навигации."
     )
+
+# --- Обработка кнопок главного меню ---
 
 @dp.callback_query(F.data == "how_connect")
 async def cb_how_connect(callback: types.CallbackQuery, state: FSMContext):
@@ -249,12 +304,20 @@ async def cb_vpn_not_work(callback: types.CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "logs")
 async def cb_logs(callback: types.CallbackQuery):
     await callback.answer()
-    await callback.message.answer("Мы не собираем личные данные, кроме даты регистрации.\nВаш VPN абсолютно анонимен.", reply_markup=main_menu())
+    await callback.message.answer(
+        "Мы не собираем личные данные, кроме даты регистрации.\n"
+        "Ваш VPN абсолютно анонимен.",
+        reply_markup=main_menu()
+    )
 
 @dp.callback_query(F.data == "paid_subscription")
 async def cb_paid_subscription(callback: types.CallbackQuery):
     await callback.answer()
-    await callback.message.answer("В данный момент VPN бесплатен.\nПлатная подписка планируется не раньше конца 2025.", reply_markup=main_menu())
+    await callback.message.answer(
+        "В данный момент VPN бесплатен.\n"
+        "Платная подписка планируется не раньше конца 2025.",
+        reply_markup=main_menu()
+    )
 
 @dp.callback_query(F.data == "ideas")
 async def cb_ideas(callback: types.CallbackQuery, state: FSMContext):
@@ -267,7 +330,8 @@ async def cb_rf_server(callback: types.CallbackQuery):
     await callback.answer()
     await callback.message.answer(
         "Серверы РФ работают стабильно и не блокируются РКН.\n"
-        "Вы можете смотреть YouTube и другие сервисы без ограничений.", reply_markup=main_menu()
+        "Вы можете смотреть YouTube и другие сервисы без ограничений.",
+        reply_markup=main_menu()
     )
 
 @dp.callback_query(F.data == "admin_panel")
@@ -279,27 +343,27 @@ async def cb_admin_panel(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.answer("Админ-панель", reply_markup=admin_menu())
 
 # --- Обработка выбора устройства ---
+
 @dp.callback_query(Form.waiting_for_device, F.data.startswith("device_"))
 async def cb_device(callback: types.CallbackQuery, state: FSMContext):
     device = callback.data.split("_")[1]
     await callback.answer()
-    key_text = "vless://examplekey"  # Здесь должен быть реальный ключ или инструкция из базы
-    
+    # В реальном коде нужно вытягивать ключи/инструкции из базы или конфигурации
+    key_text = "vless://examplekey"  # заглушка ключа
+
     instructions = {
         "Android": (
             "Инструкция для Android:\n"
-            "1. Скачайте v2RayTun.\n"
+            "1. Скачайте приложение v2RayTun.\n"
             "2. Нажмите '+' и выберите 'Ручной ввод'.\n"
-            "3. Вставьте ключ:\n"
-            f"`{key_text}`\n"
+            f"3. Вставьте ключ:\n`{key_text}`\n"
             "4. Подключитесь и пользуйтесь.\n\n"
             "Статус VPN: Активно (VLESS)"
         ),
         "iOS": (
             "Инструкция для iOS:\n"
             "1. Скачайте ShadowRay.\n"
-            "2. Добавьте конфигурацию с ключом:\n"
-            f"`{key_text}`\n"
+            f"2. Добавьте конфигурацию с ключом:\n`{key_text}`\n"
             "3. Подключитесь.\n\n"
             "Статус VPN: Активно (VLESS)"
         ),
@@ -307,25 +371,25 @@ async def cb_device(callback: types.CallbackQuery, state: FSMContext):
             "Инструкция для Windows:\n"
             "1. Скачайте приложение hiddify.\n"
             "2. Нажмите '+' → 'Ручной ввод'.\n"
-            "3. Вставьте ключ:\n"
-            f"`{key_text}`\n"
+            f"3. Вставьте ключ:\n`{key_text}`\n"
             "4. Включите VPN.\n\n"
             "Статус VPN: Активно (VLESS)"
         ),
         "MacOS": (
             "Инструкция для MacOS:\n"
             "1. Скачайте ShadowRay или аналог.\n"
-            "2. Вставьте ключ:\n"
-            f"`{key_text}`\n"
+            f"2. Вставьте ключ:\n`{key_text}`\n"
             "3. Подключитесь.\n\n"
             "Статус VPN: Активно (VLESS)"
         ),
     }
+
     text = instructions.get(device, "Выберите устройство из списка.")
     await callback.message.answer(text, parse_mode="Markdown", reply_markup=resolve_menu())
     await state.set_state(Form.waiting_for_resolve)
 
 # --- Обработка выбора сервера ---
+
 @dp.callback_query(Form.waiting_for_server, F.data.startswith("server_"))
 async def cb_server(callback: types.CallbackQuery, state: FSMContext):
     server = callback.data.split("_")[1]
@@ -335,6 +399,7 @@ async def cb_server(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(Form.waiting_for_country)
 
 # --- Обработка выбора страны ---
+
 @dp.callback_query(Form.waiting_for_country, F.data.startswith("country_"))
 async def cb_country(callback: types.CallbackQuery, state: FSMContext):
     country = callback.data.split("_")[1]
@@ -361,6 +426,7 @@ async def cb_country(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(Form.waiting_for_resolve)
 
 # --- Решено/Не решено ---
+
 @dp.callback_query(Form.waiting_for_resolve, F.data.in_({"resolved", "not_resolved"}))
 async def cb_resolve(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
@@ -372,6 +438,7 @@ async def cb_resolve(callback: types.CallbackQuery, state: FSMContext):
         await state.set_state(Form.waiting_for_manager_problem)
 
 # --- Оценка качества ---
+
 @dp.callback_query(Form.waiting_for_rating, F.data.startswith("rating_"))
 async def cb_rating(callback: types.CallbackQuery, state: FSMContext):
     rating = int(callback.data.split("_")[1])
@@ -390,6 +457,7 @@ async def cb_rating(callback: types.CallbackQuery, state: FSMContext):
         await state.clear()
 
 # --- Подробности проблемы ---
+
 @dp.message(Form.waiting_for_problem_desc)
 async def msg_problem_desc(message: types.Message, state: FSMContext):
     desc = message.text.strip()
@@ -448,4 +516,53 @@ async def cb_admin_tickets(callback: types.CallbackQuery):
     cursor.execute("SELECT code, user_id, problem, status, created_at FROM tickets ORDER BY created_at DESC LIMIT 10")
     rows = cursor.fetchall()
     if not rows:
-        await callback.message
+        await callback.message.answer("Нет заявок для отображения.")
+        await callback.answer()
+        return
+
+    text = "Последние обращения:\n\n"
+    for code, user_id, problem, status, created_at in rows:
+        text += (f"Код: {code}\nПользователь: {user_id}\nПроблема: {problem}\n"
+                 f"Статус: {status}\nДата: {created_at}\n\n")
+    await callback.message.answer(text)
+
+# --- Админ — статистика ---
+@dp.callback_query(F.data == "admin_stats")
+async def cb_admin_stats(callback: types.CallbackQuery):
+    if callback.from_user.id not in MANAGERS:
+        await callback.answer("Доступ запрещён", show_alert=True)
+        return
+
+    cursor.execute("SELECT COUNT(*) FROM tickets")
+    total_tickets = cursor.fetchone()[0]
+
+    cursor.execute("SELECT AVG(rating) FROM ratings")
+    avg_rating = cursor.fetchone()[0]
+    avg_rating = round(avg_rating, 2) if avg_rating else "Нет оценок"
+
+    cursor.execute("SELECT description, count FROM problem_feedback ORDER BY count DESC LIMIT 5")
+    problems = cursor.fetchall()
+
+    text = (f"📊 Статистика бота:\n"
+            f"Общее количество заявок: {total_tickets}\n"
+            f"Средний рейтинг обслуживания: {avg_rating}\n\n"
+            f"Частые проблемы:\n")
+
+    if problems:
+        for desc, count in problems:
+            text += f"- {desc} ({count} раз)\n"
+    else:
+        text += "Пока проблем не зарегистрировано."
+
+    await callback.message.answer(text)
+
+# --- Обработка неизвестных сообщений ---
+@dp.message()
+async def unknown_message(message: types.Message):
+    await message.answer("Используйте команды /start или кнопки меню для навигации.")
+
+# --- Запуск бота ---
+if __name__ == "__main__":
+    import asyncio
+    print("Бот запускается...")
+    asyncio.run(dp.start_polling())
