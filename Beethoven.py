@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 # --- Инициализация бота и диспетчера с памятью состояний ---
 storage = MemoryStorage()
 bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher(storage=storage)
+dp = Dispatcher(bot=bot, storage=storage)
 
 # --- Временная зона ---
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
