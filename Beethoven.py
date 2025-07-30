@@ -10,7 +10,7 @@ from aiogram import Bot, Dispatcher, types, F
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.filters import CommandStart, CommandHelp
+from aiogram.filters import CommandStart, Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from dotenv import load_dotenv
 import asyncio
@@ -201,6 +201,7 @@ async def notify_managers(text: str):
 # --- Обработчики команд ---
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message, state: FSMContext):
+    ...
     await message.answer(
         "🔐 Добро пожаловать в поддержку LKN VPN!\n\n"
         "Вы можете быстро получить помощь по подключению, работе VPN и другим вопросам.\n"
